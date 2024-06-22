@@ -4,6 +4,7 @@
 #include <DHT_U.h>
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <PubSubClient.h>
 
 /** WIFI反馈引脚 */
 #define WIFI_STATE_PIN 22
@@ -91,6 +92,9 @@ DHT_Unified dht(DHTPIN, DHTTYPE);
 
 /**
  *  数据采集
+ *  切换灯光状态
+ *  切换蜂鸣器状态
+ *  切换振动器
  */
 void dataCollection();
 
@@ -134,10 +138,33 @@ void reconnectWifi();
  */
 void connectingWifi();
 
+// MQTT Broker 服务端连接
+const int mqtt_port = 1883;
+const char *mqtt_topic = "attributes";
+const char *mqtt_password = "xaOLytUEQI";
+const char *mqtt_username = "5mk5srrjyi245nf4";
+const char *mqtt_broker = "sh-3-mqtt.iot-api.com";
+
+/**
+ * 客户端事件
+ */
+PubSubClient client(espClient);
+
+/**
+ * mqtt 连接
+ */
+void connectingMqtt();
+
+/**
+ * mqtt 数据上送
+ */
+void publishMqttMesage();
+
 void setup()
 {
   Serial.begin(9600);
   connectingWifi();
+  connectingMqtt();
   initPinMode();
   tft.init();
   dht.begin();
@@ -146,12 +173,9 @@ void setup()
 void loop()
 {
   reconnectWifi();
+  client.loop();
   dataCollection();
-  onOrOffBuzzer();
-  changeLight();
-  changeShock();
-  updateText();
-  delay(2000);
+  delay(5000);
 }
 
 void initPinMode()
@@ -175,6 +199,11 @@ void dataCollection()
   {
     oldHumidity = humidity;
     oldTemperature = temperature;
+    onOrOffBuzzer();
+    changeLight();
+    changeShock();
+    updateText();
+    publishMqttMesage();
   }
 }
 
@@ -219,9 +248,13 @@ void updateText()
   String wifiStateText = WiFi.status() == WL_CONNECTED ? "online" : "offline";
   tft.drawString("WifiState:", 0, 135);
   tft.drawString(wifiStateText, 70, 135);
+
+  String mqttStateText = client.connected() ? "online" : "offline";
+  tft.drawString("mqttState:", 0, 150);
+  tft.drawString(mqttStateText, 70, 150);
 }
 
-void onOrOffBuzzer()
+void onOrOffBuzzer() 
 {
   buzzerState = oldTemperature >= MAX_TEMP;
   buzzerState ? digitalWrite(BUZZER_PIN, HIGH) : digitalWrite(BUZZER_PIN, LOW);
@@ -281,4 +314,43 @@ void reconnectWifi()
   {
     connectingWifi();
   }
+}
+
+void connectingMqtt()
+{
+  client.setServer(mqtt_broker, mqtt_port);
+  while (!client.connected())
+  {
+    String client_id = "esp32-client-";
+    client_id += String(WiFi.macAddress());
+    Serial.printf("The client %s connects to the public mqtt broker\n", client_id.c_str());
+    if (client.connect(client_id.c_str(), mqtt_username, mqtt_password))
+    {
+      Serial.println("连接成功");
+      client.subscribe(mqtt_topic);
+    }
+    else
+    {
+      Serial.print("连接失败");
+      Serial.print(client.state()); // 返回连接状态
+      delay(2000);
+    }
+  }
+}
+
+void publishMqttMesage()
+{
+  if (!client.connected())
+  {
+    Serial.println("数据重连");
+    connectingMqtt();
+  }
+  char msg[200];
+  snprintf(
+      msg, sizeof(msg),
+      "{ \"temperature\":%.1f, \"humidity\":%.1f, \"buzzer\":%.1f }",
+      oldTemperature,
+      oldHumidity,
+      buzzerState);
+  client.publish(mqtt_topic, msg);
 }
